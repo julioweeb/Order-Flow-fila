@@ -1,0 +1,17 @@
+## .NET / Visual Studio
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.log
+
+## Segredos: nunca commitar senha do banco
+appsettings.Development.json
+appsettings.Local.json
+.env
+
+## Angular
+node_modules/
+dist/
+.angular/

@@ -1,0 +1,22 @@
+# Sobe o RabbitMQ com o painel de administração.
+# Painel: http://localhost:15672  (usuário: orderflow / senha: orderflow)
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: orderflow-rabbitmq
+    ports:
+      - "5672:5672"     # porta AMQP (usada pelos serviços .NET)
+      - "15672:15672"   # painel web de administração
+    environment:
+      RABBITMQ_DEFAULT_USER: orderflow
+      RABBITMQ_DEFAULT_PASS: orderflow
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:
