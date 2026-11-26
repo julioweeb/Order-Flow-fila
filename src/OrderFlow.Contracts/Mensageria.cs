@@ -37,5 +37,7 @@ public static class Mensageria
     public const string HeaderErro = "x-erro";
 
     // Mesmo formato JSON (camelCase) para quem publica e para quem consome
+    public const string RkPedidoAndamento = "andamento.pedido";
+    public const string FilaAndamento = "orders.andamento";
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 }

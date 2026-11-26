@@ -7,6 +7,7 @@ namespace OrderFlow.Payment.Worker;
 
 // Consome "pedido.criado", simula a cobrança e publica o resultado.
 // Se algo falhar: retry com backoff (5s, 15s, 30s) e, esgotadas as tentativas, Dead Letter Queue.
+// Cada etapa também é publicada como "andamento.pedido" para aparecer na linha do tempo do front.
 public sealed class PedidoCriadoConsumer(
     RabbitMqSettings settings,
     ILogger<PedidoCriadoConsumer> logger) : BackgroundService
@@ -55,11 +56,15 @@ public sealed class PedidoCriadoConsumer(
             {
                 // Quantas vezes esta mensagem já falhou (0 na primeira entrega)
                 var tentativa = LerTentativas(ea);
+                PedidoCriado? pedido = null;
 
                 try
                 {
-                    var pedido = JsonSerializer.Deserialize<PedidoCriado>(ea.Body.Span, Mensageria.Json)
-                                 ?? throw new JsonException("Corpo da mensagem vazio.");
+                    pedido = JsonSerializer.Deserialize<PedidoCriado>(ea.Body.Span, Mensageria.Json)
+                             ?? throw new JsonException("Corpo da mensagem vazio.");
+
+                    await RegistrarAndamentoAsync(conexao, pedido.PedidoId,
+                        $"Pagamento iniciado (tentativa {tentativa + 1})", stoppingToken);
 
                     logger.LogInformation("Processando pagamento do pedido {PedidoId} ({Valor:C}) - tentativa {Tentativa}...",
                         pedido.PedidoId, pedido.Valor, tentativa + 1);
@@ -79,6 +84,12 @@ public sealed class PedidoCriadoConsumer(
                         conexao,
                         aprovado ? Mensageria.RkPagamentoAprovado : Mensageria.RkPagamentoRecusado,
                         resultado,
+                        stoppingToken);
+
+                    await RegistrarAndamentoAsync(conexao, pedido.PedidoId,
+                        aprovado
+                            ? "Pagamento aprovado. Resultado publicado (pagamento.aprovado)"
+                            : "Pagamento recusado: valor acima do limite. Resultado publicado (pagamento.recusado)",
                         stoppingToken);
 
                     logger.LogInformation("Pedido {PedidoId}: pagamento {Resultado}.",
@@ -102,7 +113,7 @@ public sealed class PedidoCriadoConsumer(
                 {
                     try
                     {
-                        await TratarFalhaAsync(conexao, canal, ea, tentativa, ex, stoppingToken);
+                        await TratarFalhaAsync(conexao, canal, ea, tentativa, pedido?.PedidoId, ex, stoppingToken);
                     }
                     catch (Exception erroAoReenfileirar)
                     {
@@ -132,7 +143,7 @@ public sealed class PedidoCriadoConsumer(
         await canal.ExchangeDeclareAsync(
             Mensageria.Exchange, ExchangeType.Topic, durable: true, cancellationToken: ct);
 
-        // Fila principal (igual à de antes: sem argumentos extras)
+        // Fila principal
         await canal.QueueDeclareAsync(
             Mensageria.FilaPagamento, durable: true, exclusive: false, autoDelete: false,
             cancellationToken: ct);
@@ -145,8 +156,7 @@ public sealed class PedidoCriadoConsumer(
             Mensageria.FilaPagamentoDlq, durable: true, exclusive: false, autoDelete: false,
             cancellationToken: ct);
 
-        // Filas de espera: ninguém consome. Quando o TTL expira, a mensagem é "dead-lettered"
-        // para o exchange padrão ("") com a routing key da fila principal, ou seja, volta para ela.
+        // Filas de espera: ninguém consome. Quando o TTL expira, a mensagem volta para a fila principal.
         foreach (var segundos in Mensageria.AtrasosRetrySegundos)
         {
             var argumentos = new Dictionary<string, object?>
@@ -163,8 +173,8 @@ public sealed class PedidoCriadoConsumer(
     }
 
     // Só para o demo: o nome do cliente define o comportamento do "gateway"
-    //   "falha"    -> sempre falha (vai passar por todos os retries e cair na DLQ)
-    //   "instavel" -> falha nas 2 primeiras tentativas e depois funciona (retry resolvendo)
+    //   "falha"    -> sempre falha (passa por todos os retries e cai na DLQ)
+    //   "instavel" -> falha nas 2 primeiras tentativas e depois funciona
     private static void SimularFalhaDoGateway(PedidoCriado pedido, int tentativa)
     {
         var nome = pedido.Cliente.ToLowerInvariant();
@@ -179,7 +189,7 @@ public sealed class PedidoCriadoConsumer(
     // Decide: tenta de novo (fila de espera) ou desiste (DLQ)
     private async Task TratarFalhaAsync(
         IConnection conexao, IChannel canal, BasicDeliverEventArgs ea,
-        int tentativa, Exception ex, CancellationToken ct)
+        int tentativa, Guid? pedidoId, Exception ex, CancellationToken ct)
     {
         var atrasos = Mensageria.AtrasosRetrySegundos;
 
@@ -189,6 +199,10 @@ public sealed class PedidoCriadoConsumer(
             logger.LogWarning("Falha na tentativa {Tentativa}: {Erro}. Nova tentativa em {Segundos}s.",
                 tentativa + 1, ex.Message, segundos);
 
+            if (pedidoId is { } id)
+                await RegistrarAndamentoAsync(conexao, id,
+                    $"Falha na tentativa {tentativa + 1}: {ex.Message} Nova tentativa em {segundos}s (fila de espera)", ct);
+
             await RepublicarAsync(conexao, Mensageria.FilaPagamentoRetry(segundos), ea, tentativa + 1, ex.Message, ct);
         }
         else
@@ -196,12 +210,14 @@ public sealed class PedidoCriadoConsumer(
             logger.LogError("Esgotou as tentativas ({Total}): {Erro}. Enviando para a DLQ.",
                 tentativa + 1, ex.Message);
 
+            if (pedidoId is { } id)
+                await RegistrarAndamentoAsync(conexao, id,
+                    $"Falha na tentativa {tentativa + 1}: {ex.Message} Tentativas esgotadas, mensagem enviada para a DLQ", ct);
+
             await RepublicarAsync(conexao, Mensageria.FilaPagamentoDlq, ea, tentativa, ex.Message, ct);
         }
 
-        // Só confirma a original DEPOIS de a cópia estar na fila de destino.
-        // Se o processo cair no meio, a mensagem pode chegar duplicada, mas nunca se perde
-        // (por isso o consumidor precisa ser idempotente).
+        // Só confirma a original DEPOIS de a cópia estar na fila de destino
         await canal.BasicAckAsync(ea.DeliveryTag, false, ct);
     }
 
@@ -215,6 +231,21 @@ public sealed class PedidoCriadoConsumer(
         }
 
         return 0;
+    }
+
+    // Publica uma etapa para a linha do tempo. É "melhor esforço": nunca pode derrubar o pagamento.
+    private async Task RegistrarAndamentoAsync(
+        IConnection conexao, Guid pedidoId, string mensagem, CancellationToken ct)
+    {
+        try
+        {
+            var andamento = new PedidoAndamento(pedidoId, "Payment.Worker", mensagem, DateTime.UtcNow);
+            await PublicarAsync(conexao, Mensageria.RkPedidoAndamento, andamento, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning("Não foi possível registrar o andamento: {Erro}", ex.Message);
+        }
     }
 
     // Copia a mensagem (mesmo corpo e MessageId) para outra fila, registrando tentativas e erro

@@ -86,6 +86,7 @@ public sealed class PagamentoProcessadoConsumer(
                             ? StatusPedido.PagamentoAprovado
                             : StatusPedido.PagamentoRecusado;
                         pedido.MotivoRecusa = evento.Motivo;
+                        db.Eventos.Add(PedidoEvento.Novo(pedido.Id, "Orders.Api", $"Resultado recebido da fila. Status atualizado para {pedido.Status} no banco"));
                         await db.SaveChangesAsync(stoppingToken);
 
                         logger.LogInformation("Pedido {PedidoId} atualizado para {Status}.", pedido.Id, pedido.Status);

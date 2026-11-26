@@ -18,6 +18,7 @@ var rabbit = builder.Configuration.GetSection("RabbitMq").Get<RabbitMqSettings>(
 builder.Services.AddSingleton(rabbit);
 builder.Services.AddSingleton<RabbitMqPublisher>();
 builder.Services.AddHostedService<PagamentoProcessadoConsumer>();
+builder.Services.AddHostedService<AndamentoConsumer>();
 
 // ----- API -----
 // Enums saem como texto no JSON ("Pendente") em vez de número

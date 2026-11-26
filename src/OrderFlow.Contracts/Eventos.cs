@@ -14,3 +14,10 @@ public sealed record PagamentoProcessado(
     bool Aprovado,
     string? Motivo,
     DateTime ProcessadoEmUtc);
+
+// Evento de acompanhamento: cada etapa relevante vira uma linha na linha do tempo do pedido
+public sealed record PedidoAndamento(
+    Guid PedidoId,
+    string Origem,
+    string Mensagem,
+    DateTime OcorridoEmUtc);

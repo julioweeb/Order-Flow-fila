@@ -53,6 +53,35 @@ namespace OrderFlow.Orders.Api.Migrations
 
                     b.ToTable("pedidos", (string)null);
                 });
+
+            modelBuilder.Entity("OrderFlow.Orders.Api.Domain.PedidoEvento", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Mensagem")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("OcorridoEmUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Origem")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<Guid>("PedidoId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PedidoId");
+
+                    b.ToTable("pedido_eventos", (string)null);
+                });
 #pragma warning restore 612, 618
         }
     }
